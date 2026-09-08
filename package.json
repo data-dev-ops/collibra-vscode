@@ -74,6 +74,12 @@
         "icon": "$(plug)"
       },
       {
+        "command": "collibra.refreshConnections",
+        "title": "Collibra: Refresh Connections",
+        "category": "Collibra",
+        "icon": "$(refresh)"
+      },
+      {
         "command": "collibra.testActiveConnection",
         "title": "Collibra: Test Active Connection",
         "category": "Collibra"
@@ -87,9 +93,14 @@
           "group": "navigation"
         },
         {
+          "command": "collibra.refreshConnections",
+          "when": "view == collibraConnectionView",
+          "group": "navigation@1"
+        },
+        {
           "command": "collibra.manageConnections",
           "when": "view == collibraConnectionView",
-          "group": "navigation"
+          "group": "navigation@2"
         }
       ],
       "editor/context": [
@@ -117,6 +128,33 @@
           "type": "string",
           "default": "pagila",
           "description": "Default PostgreSQL schema used when tables are unqualified."
+        },
+        "collibra.connections": {
+          "type": "array",
+          "default": [],
+          "description": "List of configured Collibra catalog connections maintained in settings.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string", "description": "Unique identifier for the connection" },
+              "name": { "type": "string", "description": "Human-readable connection name" },
+              "url": { "type": "string", "description": "Collibra REST API v2 base URL" },
+              "username": { "type": "string", "description": "Username / service account" },
+              "password": { "type": "string", "description": "Password or API token" },
+              "isDefault": { "type": "boolean", "description": "Whether this is the default connection" }
+            },
+            "required": ["id", "name", "url"]
+          }
+        },
+        "collibra.activeConnectionId": {
+          "type": "string",
+          "default": "",
+          "description": "ID of the currently active Collibra connection."
+        },
+        "collibra.url": {
+          "type": "string",
+          "default": "",
+          "description": "Direct URL of Collibra instance (convenience setting)."
         }
       }
     }

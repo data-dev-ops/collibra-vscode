@@ -55,7 +55,7 @@ export class ConnectionWebviewViewProvider implements vscode.WebviewViewProvider
     this.updateWebview();
   }
 
-  private async updateWebview(): Promise<void> {
+  public async updateWebview(): Promise<void> {
     if (!this._view) return;
     const connections = await this.connectionManager.getConnections();
     const active = await this.connectionManager.getActiveConnection();
@@ -395,6 +395,13 @@ export class ConnectionWebviewViewProvider implements vscode.WebviewViewProvider
         const isActive = conn.id === activeId;
         const li = document.createElement('li');
         li.className = 'conn-card' + (isActive ? ' active' : '');
+
+        let actionButtons = '';
+        if (!isActive) {
+          actionButtons += '<button class="btn-sm" data-action="setActive" data-id="' + escapeHtml(conn.id) + '">Set Active</button> ';
+        }
+        actionButtons += '<button class="btn-sm btn-del" data-action="delete" data-id="' + escapeHtml(conn.id) + '">Delete</button>';
+
         li.innerHTML = \`
           <div class="conn-card-header">
             <span class="conn-title">\${escapeHtml(conn.name)}</span>
@@ -402,8 +409,7 @@ export class ConnectionWebviewViewProvider implements vscode.WebviewViewProvider
           </div>
           <div class="conn-url">\${escapeHtml(conn.url)} (\${escapeHtml(conn.username)})</div>
           <div class="conn-card-actions">
-            \${!isActive ? '<button class="btn-sm" data-action="setActive" data-id="' + conn.id + '">Set Active</button>' : ''}
-            <button class="btn-sm btn-del" data-action="delete" data-id="' + conn.id + '">Delete</button>
+            \${actionButtons}
           </div>
         \`;
         list.appendChild(li);

@@ -15,6 +15,32 @@ export class ConnectionManager {
     private readonly context: vscode.ExtensionContext
   ) {
     this.ensureDefaultConnection();
+
+    // Listen for manual edits in .vscode/settings.json or configuration updates
+    this.context.subscriptions.push(
+      vscode.workspace.onDidChangeConfiguration(async (e) => {
+        if (
+          e.affectsConfiguration("collibra.connections") ||
+          e.affectsConfiguration("collibra.activeConnectionId") ||
+          e.affectsConfiguration("collibra.url")
+        ) {
+          await this.syncFromConfiguration();
+        }
+      })
+    );
+  }
+
+  public async syncFromConfiguration(): Promise<void> {
+    const connections = await this.getConnections();
+    const active = await this.getActiveConnection();
+    this._onDidChangeConnections.fire(connections);
+    this._onDidChangeActiveConnection.fire(active);
+  }
+
+  private getConfigTarget(): vscode.ConfigurationTarget {
+    return vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0
+      ? vscode.ConfigurationTarget.Workspace
+      : vscode.ConfigurationTarget.Global;
   }
 
   private async ensureDefaultConnection(): Promise<void> {
@@ -36,14 +62,35 @@ export class ConnectionManager {
   }
 
   public async getConnections(): Promise<CollibraConnection[]> {
-    const raw = this.context.globalState.get<CollibraConnection[]>(ConnectionManager.STORAGE_KEY, []);
-    // Retrieve passwords from secret storage if available
+    const config = vscode.workspace.getConfiguration("collibra");
+    const fromConfig = config.get<CollibraConnection[]>("connections") || [];
+    const directUrl = config.get<string>("url");
+
+    let raw: CollibraConnection[] = [];
+    if (Array.isArray(fromConfig) && fromConfig.length > 0) {
+      raw = [...fromConfig];
+    } else {
+      raw = this.context.globalState.get<CollibraConnection[]>(ConnectionManager.STORAGE_KEY, []);
+    }
+
+    if (raw.length === 0 && directUrl) {
+      raw = [{
+        id: "conn-direct",
+        name: "Collibra (Configured URL)",
+        url: directUrl,
+        username: "admin",
+        password: "password123",
+        isDefault: true
+      }];
+    }
+
+    // Retrieve passwords from secret storage if not provided inline
     const result: CollibraConnection[] = [];
     for (const c of raw) {
       const secret = await this.context.secrets.get(`collibra.secret.${c.id}`);
       result.push({
         ...c,
-        password: secret || c.password || ""
+        password: c.password || secret || ""
       });
     }
     return result;
@@ -51,7 +98,12 @@ export class ConnectionManager {
 
   public async getActiveConnection(): Promise<CollibraConnection | null> {
     const connections = await this.getConnections();
-    const activeId = this.context.globalState.get<string>(ConnectionManager.ACTIVE_KEY);
+    if (connections.length === 0) return null;
+
+    const config = vscode.workspace.getConfiguration("collibra");
+    const activeId = config.get<string>("activeConnectionId") ||
+      this.context.globalState.get<string>(ConnectionManager.ACTIVE_KEY);
+
     if (activeId) {
       const found = connections.find(c => c.id === activeId);
       if (found) return found;
@@ -60,7 +112,11 @@ export class ConnectionManager {
   }
 
   public async setActiveConnection(id: string): Promise<void> {
+    const target = this.getConfigTarget();
+    const config = vscode.workspace.getConfiguration("collibra");
+    await config.update("activeConnectionId", id, target);
     await this.context.globalState.update(ConnectionManager.ACTIVE_KEY, id);
+
     const active = await this.getActiveConnection();
     this._onDidChangeActiveConnection.fire(active);
   }
@@ -69,13 +125,10 @@ export class ConnectionManager {
     const connections = await this.getConnections();
     const index = connections.findIndex(c => c.id === conn.id);
 
-    // Save password securely
+    // Save password securely in SecretStorage as well
     if (conn.password) {
       await this.context.secrets.store(`collibra.secret.${conn.id}`, conn.password);
     }
-
-    // Clone without password in globalState for safety
-    const safeConn = { ...conn, password: "" };
 
     let updated: CollibraConnection[];
     if (index >= 0) {
@@ -85,29 +138,46 @@ export class ConnectionManager {
       updated = [...connections, conn];
     }
 
+    const target = this.getConfigTarget();
+    const config = vscode.workspace.getConfiguration("collibra");
+    // Write to settings.json
+    await config.update("connections", updated, target);
+
+    // Also sync to globalState for offline fallback
     const stateToSave = updated.map(c => ({ ...c, password: "" }));
     await this.context.globalState.update(ConnectionManager.STORAGE_KEY, stateToSave);
-    this._onDidChangeConnections.fire(updated);
 
-    // If only 1 connection or marked default, set active
     if (updated.length === 1 || conn.isDefault) {
       await this.setActiveConnection(conn.id);
     }
+
+    this._onDidChangeConnections.fire(updated);
   }
 
   public async deleteConnection(id: string): Promise<void> {
     const connections = await this.getConnections();
     const updated = connections.filter(c => c.id !== id);
+
+    const target = this.getConfigTarget();
+    const config = vscode.workspace.getConfiguration("collibra");
+    // Update .vscode/settings.json
+    await config.update("connections", updated.length > 0 ? updated : undefined, target);
+
+    // Update globalState
     const stateToSave = updated.map(c => ({ ...c, password: "" }));
     await this.context.globalState.update(ConnectionManager.STORAGE_KEY, stateToSave);
     await this.context.secrets.delete(`collibra.secret.${id}`);
 
-    const activeId = this.context.globalState.get<string>(ConnectionManager.ACTIVE_KEY);
+    const activeId = config.get<string>("activeConnectionId") ||
+      this.context.globalState.get<string>(ConnectionManager.ACTIVE_KEY);
+
     if (activeId === id) {
       const nextActive = updated[0]?.id || "";
+      await config.update("activeConnectionId", nextActive || undefined, target);
       await this.context.globalState.update(ConnectionManager.ACTIVE_KEY, nextActive);
       this._onDidChangeActiveConnection.fire(updated[0] || null);
     }
+
     this._onDidChangeConnections.fire(updated);
   }
 

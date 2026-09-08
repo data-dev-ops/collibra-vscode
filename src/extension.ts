@@ -54,6 +54,11 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("collibra.refreshLineage", () => {
       lineageProvider.refreshCurrentLineage();
     }),
+    vscode.commands.registerCommand("collibra.refreshConnections", async () => {
+      await connectionManager.syncFromConfiguration();
+      await connectionProvider.updateWebview();
+      vscode.window.showInformationMessage("Collibra connections reloaded.");
+    }),
     vscode.commands.registerCommand("collibra.manageConnections", () => {
       vscode.commands.executeCommand("collibraConnectionView.focus");
     }),
