@@ -1,0 +1,138 @@
+{
+  "name": "collibra-lineage",
+  "displayName": "Collibra SQL Lineage",
+  "description": "Interactive SQL query lineage and Collibra Data Governance catalog integration at your cursor",
+  "version": "0.1.0",
+  "publisher": "collibra-dataops",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/collibra-dataops/collibra-lineage"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Data Science",
+    "Other"
+  ],
+  "keywords": [
+    "collibra",
+    "sql",
+    "lineage",
+    "data governance",
+    "postgres",
+    "pagila",
+    "catalog"
+  ],
+  "main": "./out/src/extension.js",
+  "activationEvents": [
+    "onLanguage:sql",
+    "onView:collibraLineageView",
+    "onView:collibraConnectionView"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "collibra-explorer",
+          "title": "Collibra Lineage",
+          "icon": "media/collibra-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "collibra-explorer": [
+        {
+          "type": "webview",
+          "id": "collibraLineageView",
+          "name": "Active Query Lineage"
+        },
+        {
+          "type": "webview",
+          "id": "collibraConnectionView",
+          "name": "Collibra Connection"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "collibra.openLineage",
+        "title": "Collibra: Open Lineage Explorer",
+        "category": "Collibra"
+      },
+      {
+        "command": "collibra.refreshLineage",
+        "title": "Collibra: Refresh Lineage at Cursor",
+        "category": "Collibra",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "collibra.manageConnections",
+        "title": "Collibra: Manage Connections",
+        "category": "Collibra",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "collibra.testActiveConnection",
+        "title": "Collibra: Test Active Connection",
+        "category": "Collibra"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "collibra.refreshLineage",
+          "when": "view == collibraLineageView",
+          "group": "navigation"
+        },
+        {
+          "command": "collibra.manageConnections",
+          "when": "view == collibraConnectionView",
+          "group": "navigation"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "collibra.refreshLineage",
+          "when": "editorLangId == sql",
+          "group": "collibra"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Collibra Lineage",
+      "properties": {
+        "collibra.autoRefresh": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically update lineage as the cursor moves in SQL files."
+        },
+        "collibra.debounceMs": {
+          "type": "number",
+          "default": 300,
+          "description": "Debounce delay in milliseconds before parsing lineage on cursor movement."
+        },
+        "collibra.defaultSchema": {
+          "type": "string",
+          "default": "pagila",
+          "description": "Default PostgreSQL schema used when tables are unqualified."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "node out/test/parser.test.js && node out/test/collibra.test.js",
+    "test:unit": "node out/test/parser.test.js && node out/test/collibra.test.js",
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^2.24.0",
+    "typescript": "^5.3.3"
+  }
+}
