@@ -12,8 +12,11 @@ export class CollibraClient {
 
   constructor(private connection: CollibraConnection | null) {}
 
+  private resolvedBaseUrl: string | null = null;
+
   public setConnection(conn: CollibraConnection | null): void {
     this.connection = conn;
+    this.resolvedBaseUrl = null;
     this.assetCache.clear();
   }
 
@@ -28,18 +31,61 @@ export class CollibraClient {
     return headers;
   }
 
-  private getBaseUrl(): string {
-    if (!this.connection || !this.connection.url) {
-      return "http://localhost:8080";
+  public getCandidateUrls(inputUrl?: string): string[] {
+    const raw = (inputUrl || this.connection?.url || process.env.COLLIBRA_URL || "http://collibra-service:8080")
+      .trim()
+      .replace(/\/+$/, "");
+    const candidates: string[] = [raw];
+
+    if (/localhost|127\.0\.0\.1/.test(raw)) {
+      candidates.push(raw.replace(/localhost|127\.0\.0\.1/, "collibra-service"));
+      if (process.env.COLLIBRA_URL) {
+        candidates.push(process.env.COLLIBRA_URL.trim().replace(/\/+$/, ""));
+      }
+      candidates.push(raw.replace(/localhost|127\.0\.0\.1/, "host.docker.internal"));
+    } else if (/collibra-service/.test(raw)) {
+      candidates.push(raw.replace("collibra-service", "localhost"));
+      candidates.push(raw.replace("collibra-service", "127.0.0.1"));
     }
-    return this.connection.url.replace(/\/+$/, "");
+
+    return Array.from(new Set(candidates));
+  }
+
+  public async getWorkingBaseUrl(): Promise<string> {
+    if (this.resolvedBaseUrl) {
+      return this.resolvedBaseUrl;
+    }
+
+    const candidates = this.getCandidateUrls();
+    for (const testUrl of candidates) {
+      try {
+        const res = await fetch(`${testUrl}/health`, { signal: AbortSignal.timeout(1500) });
+        if (res.ok) {
+          this.resolvedBaseUrl = testUrl;
+          return testUrl;
+        }
+      } catch (e) {
+        // try next candidate
+      }
+    }
+
+    // Default to first candidate
+    this.resolvedBaseUrl = candidates[0];
+    return this.resolvedBaseUrl;
+  }
+
+  public getAssetWebUrl(assetId: string): string {
+    const base = (this.resolvedBaseUrl || this.connection?.url || "http://localhost:8080").replace(/\/+$/, "");
+    // Inside devcontainer baseUrl is collibra-service:8080, but browser on host needs localhost:8080
+    const browserBase = base.replace("collibra-service", "localhost");
+    return `${browserBase}/?assetId=${encodeURIComponent(assetId)}#asset/${encodeURIComponent(assetId)}`;
   }
 
   /**
    * Searches Collibra catalog for an asset matching the given table/view name.
    */
   public async findAsset(objectName: string): Promise<CollibraAsset | null> {
-    if (!this.connection) return null;
+    if (!this.connection && !process.env.COLLIBRA_URL) return null;
 
     const cacheKey = objectName.toLowerCase();
     if (this.assetCache.has(cacheKey)) {
@@ -47,10 +93,19 @@ export class CollibraClient {
     }
 
     try {
-      const baseUrl = this.getBaseUrl();
+      const baseUrl = await this.getWorkingBaseUrl();
       // Try exact name match
       let url = `${baseUrl}/rest/2.0/assets?name=${encodeURIComponent(objectName)}&nameMatchMode=EXACT&limit=5`;
-      let res = await fetch(url, { headers: this.getAuthHeaders() });
+      let res: Response;
+      try {
+        res = await fetch(url, { headers: this.getAuthHeaders(), signal: AbortSignal.timeout(3000) });
+      } catch (fetchErr) {
+        // Retry candidate resolution once in case network changed
+        this.resolvedBaseUrl = null;
+        const retryBase = await this.getWorkingBaseUrl();
+        url = `${retryBase}/rest/2.0/assets?name=${encodeURIComponent(objectName)}&nameMatchMode=EXACT&limit=5`;
+        res = await fetch(url, { headers: this.getAuthHeaders(), signal: AbortSignal.timeout(3000) });
+      }
 
       let data: any = null;
       if (res.ok) {
@@ -61,7 +116,7 @@ export class CollibraClient {
       if ((!data || !data.results || data.results.length === 0) && objectName.includes(".")) {
         const shortName = objectName.split(".").pop()!;
         url = `${baseUrl}/rest/2.0/assets?name=${encodeURIComponent(shortName)}&nameMatchMode=EXACT&limit=5`;
-        res = await fetch(url, { headers: this.getAuthHeaders() });
+        res = await fetch(url, { headers: this.getAuthHeaders(), signal: AbortSignal.timeout(3000) });
         if (res.ok) {
           data = await res.json();
         }
@@ -77,7 +132,7 @@ export class CollibraClient {
           domainId: raw.domainId,
           status: raw.status || "Approved",
           attributes: raw.attributes || {},
-          collibraUrl: `${baseUrl}/?assetId=${encodeURIComponent(raw.id)}#asset/${encodeURIComponent(raw.id)}`
+          collibraUrl: this.getAssetWebUrl(raw.id)
         };
         this.assetCache.set(cacheKey, asset);
         return asset;
@@ -101,12 +156,11 @@ export class CollibraClient {
     const upstream: Array<{ id: string; name: string; type: string }> = [];
     const downstream: Array<{ id: string; name: string; type: string }> = [];
 
-    if (!this.connection) return { upstream, downstream };
-
     try {
-      const baseUrl = this.getBaseUrl();
+      const baseUrl = await this.getWorkingBaseUrl();
       const res = await fetch(`${baseUrl}/rest/2.0/diagrams/lineage/${assetId}`, {
-        headers: this.getAuthHeaders()
+        headers: this.getAuthHeaders(),
+        signal: AbortSignal.timeout(3000)
       });
 
       if (res.ok) {
@@ -174,13 +228,21 @@ export class CollibraClient {
     }
 
     // Current Query Transformation Node
+    const isDdl = statement.statementType.startsWith("CREATE") || statement.statementType.startsWith("ALTER");
     const queryNode: LineageGraphNode = {
       id: queryNodeId,
       name: queryTitle,
       displayName: queryTitle,
       type: statement.statementType,
       role: "current_query",
-      foundInCollibra: false
+      status: isDdl ? "Active DDL" : "SQL Transformation",
+      foundInCollibra: true,
+      attributes: {
+        "Transformation Type": statement.statementType,
+        "Target Objects": statement.targetObjects.join(", ") || "None (In-memory query result)",
+        "Source Dependencies": statement.sourceObjects.join(", ") || "None",
+        "Code Scope": `Lines ${statement.startLine + 1} - ${statement.endLine + 1}`
+      }
     };
 
     // 1. Process Source Tables from Query
@@ -248,16 +310,23 @@ export class CollibraClient {
 
       if (!node) {
         const collibraAsset = await this.findAsset(tgt);
+        const targetType = collibraAsset?.typeName || (statement.statementType === "CREATE_VIEW" ? "View" : "Table");
         node = {
           id: `node-${key}`,
           name: tgt,
           displayName: collibraAsset?.displayName || tgt.split(".").pop() || tgt,
-          type: collibraAsset?.typeName || (statement.statementType === "CREATE_VIEW" ? "View" : "Table"),
+          type: targetType,
           role: "target",
-          status: collibraAsset?.status || (collibraAsset ? "Approved" : "Proposed / DDL"),
-          attributes: collibraAsset?.attributes,
+          status: collibraAsset?.status || "Proposed / DDL",
+          attributes: collibraAsset?.attributes || {
+            "Asset Status": "Proposed / DDL",
+            "Target Type": targetType,
+            "Target Name": tgt,
+            "Defined In Query": `Lines ${statement.startLine + 1} - ${statement.endLine + 1}`,
+            "Catalog Governance": collibraAsset ? "Cataloged in Collibra" : "Pending Registration (Local DDL)"
+          },
           foundInCollibra: !!collibraAsset,
-          collibraUrl: collibraAsset?.collibraUrl
+          collibraUrl: collibraAsset ? this.getAssetWebUrl(collibraAsset.id) : undefined
         };
         nodeMap.set(key, node);
       } else {

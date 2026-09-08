@@ -68,10 +68,11 @@ export class ConnectionWebviewViewProvider implements vscode.WebviewViewProvider
   }
 
   private async handleSaveConnection(data: any): Promise<void> {
+    const defaultUrl = process.env.COLLIBRA_URL || "http://collibra-service:8080";
     const conn: CollibraConnection = {
       id: data.id || "conn-" + Date.now(),
       name: data.name || "Collibra Service",
-      url: (data.url || "http://localhost:8080").trim().replace(/\/+$/, ""),
+      url: (data.url || defaultUrl).trim().replace(/\/+$/, ""),
       username: data.username || "admin",
       password: data.password || "",
       isDefault: false
@@ -85,10 +86,11 @@ export class ConnectionWebviewViewProvider implements vscode.WebviewViewProvider
 
   private async handleTestConnection(data: any): Promise<void> {
     if (!this._view) return;
+    const defaultUrl = process.env.COLLIBRA_URL || "http://collibra-service:8080";
     const conn: CollibraConnection = {
       id: data.id || "temp-test",
       name: data.name || "Test Connection",
-      url: (data.url || "http://localhost:8080").trim().replace(/\/+$/, ""),
+      url: (data.url || defaultUrl).trim().replace(/\/+$/, ""),
       username: data.username || "admin",
       password: data.password || ""
     };
@@ -102,6 +104,8 @@ export class ConnectionWebviewViewProvider implements vscode.WebviewViewProvider
   }
 
   private getHtmlForWebview(): string {
+    const defaultUrl = process.env.COLLIBRA_URL || "http://collibra-service:8080";
+
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -166,7 +170,6 @@ export class ConnectionWebviewViewProvider implements vscode.WebviewViewProvider
       border-radius: 4px;
       padding: 6px 8px;
       font-size: 0.9em;
-      font-family: inherit;
       outline: none;
     }
     input:focus {
@@ -249,18 +252,19 @@ export class ConnectionWebviewViewProvider implements vscode.WebviewViewProvider
       font-size: 0.9em;
     }
     .active-badge {
-      background: rgba(27, 86, 220, 0.2);
-      color: #38bdf8;
       font-size: 0.72em;
-      font-weight: 700;
       padding: 2px 6px;
-      border-radius: 3px;
-      text-transform: uppercase;
+      background: rgba(27, 86, 220, 0.2);
+      color: #60a5fa;
+      border: 1px solid rgba(96, 165, 250, 0.4);
+      border-radius: 4px;
+      font-weight: 700;
     }
     .conn-url {
-      font-size: 0.78em;
+      font-size: 0.8em;
       color: var(--vscode-descriptionForeground, #888);
       font-family: var(--vscode-editor-font-family, monospace);
+      word-break: break-all;
     }
     .conn-card-actions {
       display: flex;
@@ -268,11 +272,12 @@ export class ConnectionWebviewViewProvider implements vscode.WebviewViewProvider
       margin-top: 6px;
     }
     .btn-sm {
-      padding: 3px 6px;
-      font-size: 0.75em;
+      padding: 4px 8px;
+      font-size: 0.78em;
       background: rgba(255,255,255,0.06);
       border: 1px solid var(--border);
       color: var(--fg);
+      flex: 0 0 auto;
       border-radius: 3px;
       cursor: pointer;
     }
@@ -282,6 +287,10 @@ export class ConnectionWebviewViewProvider implements vscode.WebviewViewProvider
     .btn-sm.btn-del {
       color: #f87171;
     }
+    .btn-sm.btn-del:hover {
+      background: rgba(239, 68, 68, 0.15);
+      border-color: rgba(239, 68, 68, 0.4);
+    }
   </style>
 </head>
 <body>
@@ -289,11 +298,11 @@ export class ConnectionWebviewViewProvider implements vscode.WebviewViewProvider
   <div class="form-container">
     <div class="form-group">
       <label for="name">Connection Name</label>
-      <input type="text" id="name" value="Pagila Collibra Local" placeholder="e.g. Pagila Local, Staging Cloud">
+      <input type="text" id="name" value="Pagila Collibra Local" placeholder="e.g. Pagila Collibra Local">
     </div>
     <div class="form-group">
       <label for="url">Collibra URL (REST API v2)</label>
-      <input type="text" id="url" value="http://localhost:8080" placeholder="http://localhost:8080 or https://company.collibra.com">
+      <input type="text" id="url" value="${defaultUrl}" placeholder="${defaultUrl} or http://localhost:8080">
     </div>
     <div class="form-group">
       <label for="username">Username / Service Account</label>
@@ -347,6 +356,20 @@ export class ConnectionWebviewViewProvider implements vscode.WebviewViewProvider
       });
     });
 
+    // Event delegation on connectionsList for Set Active and Delete buttons
+    document.getElementById('connectionsList').addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-action]');
+      if (!btn) return;
+      const action = btn.getAttribute('data-action');
+      const id = btn.getAttribute('data-id');
+
+      if (action === 'delete') {
+        vscode.postMessage({ type: 'deleteConnection', id: id });
+      } else if (action === 'setActive') {
+        vscode.postMessage({ type: 'setActive', id: id });
+      }
+    });
+
     window.addEventListener('message', event => {
       const msg = event.data;
       if (msg.type === 'setConnections') {
@@ -364,7 +387,7 @@ export class ConnectionWebviewViewProvider implements vscode.WebviewViewProvider
       list.innerHTML = '';
 
       if (connections.length === 0) {
-        list.innerHTML = '<div style="color:#888; font-size:0.85em;">No saved connections.</div>';
+        list.innerHTML = '<div style="color:#888; font-size:0.85em; padding: 6px;">No saved connections. Create one above to connect.</div>';
         return;
       }
 
@@ -379,20 +402,12 @@ export class ConnectionWebviewViewProvider implements vscode.WebviewViewProvider
           </div>
           <div class="conn-url">\${escapeHtml(conn.url)} (\${escapeHtml(conn.username)})</div>
           <div class="conn-card-actions">
-            \${!isActive ? '<button class="btn-sm" onclick="setActive(\\'' + conn.id + '\\')">Set Active</button>' : ''}
-            <button class="btn-sm btn-del" onclick="deleteConn(\\'' + conn.id + '\\')">Delete</button>
+            \${!isActive ? '<button class="btn-sm" data-action="setActive" data-id="' + conn.id + '">Set Active</button>' : ''}
+            <button class="btn-sm btn-del" data-action="delete" data-id="' + conn.id + '">Delete</button>
           </div>
         \`;
         list.appendChild(li);
       });
-    }
-
-    function setActive(id) {
-      vscode.postMessage({ type: 'setActive', id });
-    }
-
-    function deleteConn(id) {
-      vscode.postMessage({ type: 'deleteConnection', id });
     }
 
     function escapeHtml(str) {

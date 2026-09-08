@@ -20,11 +20,12 @@ export class ConnectionManager {
   private async ensureDefaultConnection(): Promise<void> {
     const connections = await this.getConnections();
     if (connections.length === 0) {
-      // Determine probable host: if running in devcontainer, collibra-service or localhost
+      // Determine default host: inside devcontainer collibra-service is reachable
+      const defaultUrl = process.env.COLLIBRA_URL || "http://collibra-service:8080";
       const defaultConn: CollibraConnection = {
         id: "conn-pagila-local",
         name: "Pagila Collibra Service (Local)",
-        url: "http://localhost:8080",
+        url: defaultUrl,
         username: "admin",
         password: "password123",
         isDefault: true
@@ -110,50 +111,74 @@ export class ConnectionManager {
     this._onDidChangeConnections.fire(updated);
   }
 
-  public async testConnection(conn: CollibraConnection): Promise<{ success: boolean; message: string; details?: any }> {
-    try {
-      const baseUrl = conn.url.replace(/\/+$/, "");
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 6000);
+  public getCandidateUrls(inputUrl: string): string[] {
+    const raw = (inputUrl || "http://localhost:8080").trim().replace(/\/+$/, "");
+    const candidates: string[] = [raw];
 
-      // Try /health or /rest/2.0/assets
-      let testUrl = `${baseUrl}/rest/2.0/assets?limit=1`;
-      let res = await fetch(testUrl, {
-        method: "GET",
-        headers: {
-          "Accept": "application/json",
-          "Authorization": "Basic " + Buffer.from(`${conn.username}:${conn.password || ""}`).toString("base64")
-        },
-        signal: controller.signal
-      });
-
-      clearTimeout(timeout);
-
-      if (res.ok) {
-        return {
-          success: true,
-          message: `Connected successfully to Collibra (${baseUrl})!`
-        };
+    // If url contains localhost or 127.0.0.1, inside container collibra-service is the Docker network host
+    if (/localhost|127\.0\.0\.1/.test(raw)) {
+      candidates.push(raw.replace(/localhost|127\.0\.0\.1/, "collibra-service"));
+      if (process.env.COLLIBRA_URL) {
+        candidates.push(process.env.COLLIBRA_URL.trim().replace(/\/+$/, ""));
       }
-
-      // If 404 on assets, try /health
-      const healthRes = await fetch(`${baseUrl}/health`);
-      if (healthRes.ok) {
-        return {
-          success: true,
-          message: `Connected to Collibra service at ${baseUrl} (Health: OK)`
-        };
-      }
-
-      return {
-        success: false,
-        message: `Collibra responded with HTTP status ${res.status}: ${res.statusText}`
-      };
-    } catch (err: any) {
-      return {
-        success: false,
-        message: `Connection failed: ${err.message || String(err)}`
-      };
+      candidates.push(raw.replace(/localhost|127\.0\.0\.1/, "host.docker.internal"));
+    } else if (/collibra-service/.test(raw)) {
+      candidates.push(raw.replace("collibra-service", "localhost"));
+      candidates.push(raw.replace("collibra-service", "127.0.0.1"));
     }
+
+    return Array.from(new Set(candidates));
+  }
+
+  public async testConnection(conn: CollibraConnection): Promise<{ success: boolean; message: string; resolvedUrl?: string }> {
+    const candidates = this.getCandidateUrls(conn.url);
+    let lastError = "Connection failed";
+
+    for (const testBase of candidates) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 4000);
+
+        let testUrl = `${testBase}/rest/2.0/assets?limit=1`;
+        let res = await fetch(testUrl, {
+          method: "GET",
+          headers: {
+            "Accept": "application/json",
+            "Authorization": "Basic " + Buffer.from(`${conn.username}:${conn.password || ""}`).toString("base64")
+          },
+          signal: controller.signal
+        });
+        clearTimeout(timeout);
+
+        if (res.ok) {
+          const note = testBase !== conn.url.replace(/\/+$/, "") ? ` (auto-resolved via ${testBase})` : "";
+          return {
+            success: true,
+            message: `Connected successfully to Collibra${note}!`,
+            resolvedUrl: testBase
+          };
+        }
+
+        // Try /health endpoint as fallback check
+        const healthRes = await fetch(`${testBase}/health`, { signal: AbortSignal.timeout(2000) });
+        if (healthRes.ok) {
+          const note = testBase !== conn.url.replace(/\/+$/, "") ? ` (auto-resolved via ${testBase})` : "";
+          return {
+            success: true,
+            message: `Connected to Collibra service${note} (Health: OK)`,
+            resolvedUrl: testBase
+          };
+        }
+
+        lastError = `HTTP ${res.status}: ${res.statusText}`;
+      } catch (err: any) {
+        lastError = err.message || String(err);
+      }
+    }
+
+    return {
+      success: false,
+      message: `Connection failed: ${lastError}`
+    };
   }
 }

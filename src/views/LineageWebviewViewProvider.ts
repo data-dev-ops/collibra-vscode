@@ -360,6 +360,8 @@ export class LineageWebviewViewProvider implements vscode.WebviewViewProvider {
     }
     .status-approved { background: rgba(16, 185, 129, 0.2); color: #10b981; }
     .status-candidate { background: rgba(245, 158, 11, 0.2); color: #f59e0b; }
+    .status-proposed { background: rgba(168, 85, 247, 0.2); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.4); }
+    .status-query { background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4); }
     .status-unregistered { background: rgba(148, 163, 184, 0.2); color: #94a3b8; }
 
     .connector-arrow {
@@ -633,14 +635,18 @@ export class LineageWebviewViewProvider implements vscode.WebviewViewProvider {
         biArrow.style.display = 'none';
       }
 
-      // If user previously selected a node, keep it selected, else select first source
+      // Smart default selection: prefer targets (e.g. view being defined), then sources
       if (selectedNodeId) {
         const stillExists = data.nodes.find(n => n.id === selectedNodeId);
         if (stillExists) {
           selectNode(stillExists);
+        } else if (targets.length > 0) {
+          selectNode(targets[0]);
         } else if (sources.length > 0) {
           selectNode(sources[0]);
         }
+      } else if (targets.length > 0) {
+        selectNode(targets[0]);
       } else if (sources.length > 0) {
         selectNode(sources[0]);
       }
@@ -654,8 +660,17 @@ export class LineageWebviewViewProvider implements vscode.WebviewViewProvider {
 
       let statusClass = 'status-unregistered';
       let statusText = node.status || 'Not in Collibra';
-      if (node.status === 'Approved') statusClass = 'status-approved';
-      else if (node.status === 'Candidate' || node.status === 'In Review') statusClass = 'status-candidate';
+      if (node.role === 'current_query') {
+        statusClass = 'status-query';
+        statusText = node.status || 'Active DDL';
+      } else if (node.status === 'Approved') {
+        statusClass = 'status-approved';
+      } else if (node.role === 'target' || (node.status && node.status.includes('Proposed'))) {
+        statusClass = 'status-proposed';
+        statusText = node.status || 'Proposed / DDL';
+      } else if (node.status === 'Candidate' || node.status === 'In Review') {
+        statusClass = 'status-candidate';
+      }
 
       div.innerHTML = \`
         <div class="node-header">
@@ -683,8 +698,21 @@ export class LineageWebviewViewProvider implements vscode.WebviewViewProvider {
       document.getElementById('drawerSub').innerText = node.name + ' (' + node.type + ')';
 
       const statusBadge = document.getElementById('drawerStatusBadge');
-      statusBadge.innerText = node.status || (node.foundInCollibra ? 'Approved' : 'Not Cataloged');
-      statusBadge.className = 'status-badge ' + (node.status === 'Approved' ? 'status-approved' : 'status-candidate');
+      let statusText = node.status || (node.foundInCollibra ? 'Approved' : 'Not Cataloged');
+      let badgeClass = 'status-unregistered';
+      if (node.role === 'current_query') {
+        badgeClass = 'status-query';
+        statusText = node.status || 'Active DDL';
+      } else if (node.status === 'Approved') {
+        badgeClass = 'status-approved';
+      } else if (node.role === 'target' || (node.status && node.status.includes('Proposed'))) {
+        badgeClass = 'status-proposed';
+        statusText = node.status || 'Proposed / DDL';
+      } else if (node.status === 'Candidate' || node.status === 'In Review') {
+        badgeClass = 'status-candidate';
+      }
+      statusBadge.innerText = statusText;
+      statusBadge.className = 'status-badge ' + badgeClass;
 
       const table = document.getElementById('drawerAttrTable');
       table.innerHTML = '';
