@@ -77,7 +77,7 @@ export class CollibraClient {
           domainId: raw.domainId,
           status: raw.status || "Approved",
           attributes: raw.attributes || {},
-          collibraUrl: `${baseUrl}/#asset/${raw.id}`
+          collibraUrl: `${baseUrl}/?assetId=${encodeURIComponent(raw.id)}#asset/${encodeURIComponent(raw.id)}`
         };
         this.assetCache.set(cacheKey, asset);
         return asset;
@@ -139,11 +139,27 @@ export class CollibraClient {
    * Constructs an interactive lineage graph combining:
    * 1. The parsed SQL statement (sources -> query -> targets)
    * 2. Live Collibra catalog metadata & upstream/downstream relations
+   * Ensures zero duplicate nodes by canonicalizing table names.
    */
   public async buildLineageGraph(statement: SqlStatementInfo): Promise<LineageGraphData> {
-    const nodes: LineageGraphNode[] = [];
+    const canonicalKey = (name: string) => name.toLowerCase().trim();
+    const nodeMap = new Map<string, LineageGraphNode>();
     const edges: LineageGraphEdge[] = [];
-    const nodeMap = new Set<string>();
+    const edgeSet = new Set<string>();
+
+    const addEdge = (sourceId: string, targetId: string, label: string, type: "query_flow" | "catalog_flow") => {
+      const key = `${sourceId}->${targetId}`;
+      if (!edgeSet.has(key) && sourceId !== targetId) {
+        edgeSet.add(key);
+        edges.push({
+          id: `edge-${sourceId}->${targetId}`,
+          source: sourceId,
+          target: targetId,
+          label,
+          type
+        });
+      }
+    };
 
     const queryNodeId = "node-current-query";
     let queryTitle = "Current Query";
@@ -157,24 +173,25 @@ export class CollibraClient {
       queryTitle = "ALTER TABLE";
     }
 
-    // Add Current Query Node
-    nodes.push({
+    // Current Query Transformation Node
+    const queryNode: LineageGraphNode = {
       id: queryNodeId,
       name: queryTitle,
       displayName: queryTitle,
       type: statement.statementType,
       role: "current_query",
       foundInCollibra: false
-    });
-    nodeMap.add(queryNodeId);
+    };
 
-    // Process Source Tables
+    // 1. Process Source Tables from Query
     for (const src of statement.sourceObjects) {
-      const collibraAsset = await this.findAsset(src);
-      const nodeId = `node-src-${src}`;
-      if (!nodeMap.has(nodeId)) {
-        nodes.push({
-          id: nodeId,
+      const key = canonicalKey(src);
+      let node = nodeMap.get(key);
+
+      if (!node) {
+        const collibraAsset = await this.findAsset(src);
+        node = {
+          id: `node-${key}`,
           name: src,
           displayName: collibraAsset?.displayName || src.split(".").pop() || src,
           type: collibraAsset?.typeName || "Table",
@@ -183,54 +200,56 @@ export class CollibraClient {
           attributes: collibraAsset?.attributes,
           foundInCollibra: !!collibraAsset,
           collibraUrl: collibraAsset?.collibraUrl
-        });
-        nodeMap.add(nodeId);
+        };
+        nodeMap.set(key, node);
+      } else {
+        // If it was previously introduced via catalog relation, promote to direct query source
+        node.role = "source";
       }
 
-      // Edge from source to current query
-      edges.push({
-        id: `edge-${src}->query`,
-        source: nodeId,
-        target: queryNodeId,
-        label: "Used in query",
-        type: "query_flow"
-      });
+      // Edge: source -> current query
+      addEdge(node.id, queryNodeId, "Used in query", "query_flow");
 
-      // If asset has upstream relations in Collibra, pull 1 level of upstream
-      if (collibraAsset) {
-        const lin = await this.getAssetLineageRelations(collibraAsset.id);
-        for (const up of lin.upstream.slice(0, 2)) {
-          const upNodeId = `node-cat-${up.id}`;
-          if (!nodeMap.has(upNodeId)) {
-            nodes.push({
-              id: upNodeId,
+      // Pull 1 level of upstream lineage from Collibra
+      const asset = await this.findAsset(src);
+      if (asset) {
+        const lin = await this.getAssetLineageRelations(asset.id);
+        for (const up of lin.upstream.slice(0, 3)) {
+          const upKey = canonicalKey(up.name);
+          let upNode = nodeMap.get(upKey);
+
+          if (!upNode) {
+            // Fetch full asset for the upstream catalog node so it has complete attributes and link
+            const fullUpAsset = await this.findAsset(up.name);
+            upNode = {
+              id: `node-${upKey}`,
               name: up.name,
-              displayName: up.name.split(".").pop() || up.name,
-              type: up.type,
+              displayName: fullUpAsset?.displayName || up.name.split(".").pop() || up.name,
+              type: fullUpAsset?.typeName || up.type,
               role: "catalog_upstream",
-              status: "Approved",
-              foundInCollibra: true
-            });
-            nodeMap.add(upNodeId);
+              status: fullUpAsset?.status || "Approved",
+              attributes: fullUpAsset?.attributes || {},
+              foundInCollibra: !!fullUpAsset,
+              collibraUrl: fullUpAsset?.collibraUrl
+            };
+            nodeMap.set(upKey, upNode);
           }
-          edges.push({
-            id: `edge-${up.id}->${collibraAsset.id}`,
-            source: upNodeId,
-            target: nodeId,
-            label: "Feeds",
-            type: "catalog_flow"
-          });
+
+          // Edge: upstream -> source table
+          addEdge(upNode.id, node.id, "Feeds", "catalog_flow");
         }
       }
     }
 
-    // Process Target Tables (for CREATE TABLE/VIEW, ALTER, INSERT)
+    // 2. Process Target Tables (for CREATE TABLE/VIEW, ALTER, INSERT)
     for (const tgt of statement.targetObjects) {
-      const collibraAsset = await this.findAsset(tgt);
-      const nodeId = `node-tgt-${tgt}`;
-      if (!nodeMap.has(nodeId)) {
-        nodes.push({
-          id: nodeId,
+      const key = canonicalKey(tgt);
+      let node = nodeMap.get(key);
+
+      if (!node) {
+        const collibraAsset = await this.findAsset(tgt);
+        node = {
+          id: `node-${key}`,
           name: tgt,
           displayName: collibraAsset?.displayName || tgt.split(".").pop() || tgt,
           type: collibraAsset?.typeName || (statement.statementType === "CREATE_VIEW" ? "View" : "Table"),
@@ -239,51 +258,50 @@ export class CollibraClient {
           attributes: collibraAsset?.attributes,
           foundInCollibra: !!collibraAsset,
           collibraUrl: collibraAsset?.collibraUrl
-        });
-        nodeMap.add(nodeId);
+        };
+        nodeMap.set(key, node);
+      } else {
+        node.role = "target";
       }
 
-      // Edge from current query to target
-      edges.push({
-        id: `edge-query->${tgt}`,
-        source: queryNodeId,
-        target: nodeId,
-        label: statement.statementType === "CREATE_VIEW" ? "Defines View" : "Produces Data",
-        type: "query_flow"
-      });
+      // Edge: current query -> target
+      addEdge(queryNodeId, node.id, statement.statementType === "CREATE_VIEW" ? "Defines View" : "Produces Data", "query_flow");
 
-      // If asset has downstream relations in Collibra, pull 1 level of downstream
-      if (collibraAsset) {
-        const lin = await this.getAssetLineageRelations(collibraAsset.id);
-        for (const down of lin.downstream.slice(0, 2)) {
-          const downNodeId = `node-cat-${down.id}`;
-          if (!nodeMap.has(downNodeId)) {
-            nodes.push({
-              id: downNodeId,
+      // Pull 1 level of downstream lineage from Collibra
+      const asset = await this.findAsset(tgt);
+      if (asset) {
+        const lin = await this.getAssetLineageRelations(asset.id);
+        for (const down of lin.downstream.slice(0, 3)) {
+          const downKey = canonicalKey(down.name);
+          let downNode = nodeMap.get(downKey);
+
+          if (!downNode) {
+            const fullDownAsset = await this.findAsset(down.name);
+            downNode = {
+              id: `node-${downKey}`,
               name: down.name,
-              displayName: down.name.split(".").pop() || down.name,
-              type: down.type,
+              displayName: fullDownAsset?.displayName || down.name.split(".").pop() || down.name,
+              type: fullDownAsset?.typeName || down.type,
               role: "catalog_downstream",
-              status: "Approved",
-              foundInCollibra: true
-            });
-            nodeMap.add(downNodeId);
+              status: fullDownAsset?.status || "Approved",
+              attributes: fullDownAsset?.attributes || {},
+              foundInCollibra: !!fullDownAsset,
+              collibraUrl: fullDownAsset?.collibraUrl
+            };
+            nodeMap.set(downKey, downNode);
           }
-          edges.push({
-            id: `edge-${collibraAsset.id}->${down.id}`,
-            source: nodeId,
-            target: downNodeId,
-            label: "Feeds BI",
-            type: "catalog_flow"
-          });
+
+          addEdge(node.id, downNode.id, "Feeds BI", "catalog_flow");
         }
       }
     }
 
+    const allNodes = [queryNode, ...Array.from(nodeMap.values())];
+
     return {
       statementInfo: statement,
       activeConnectionName: this.connection?.name || "None (Disconnected)",
-      nodes,
+      nodes: allNodes,
       edges,
       timestamp: Date.now()
     };

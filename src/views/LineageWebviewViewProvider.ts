@@ -579,13 +579,17 @@ export class LineageWebviewViewProvider implements vscode.WebviewViewProvider {
 
       // Render Graph Nodes
       document.getElementById('graphSection').style.display = 'block';
-      document.getElementById('nodeCountBadge').innerText = data.nodes.length + ' objects';
 
       // Separate nodes by role
       const sources = data.nodes.filter(n => n.role === 'source' || n.role === 'catalog_upstream');
       const queries = data.nodes.filter(n => n.role === 'current_query');
       const targets = data.nodes.filter(n => n.role === 'target');
       const biAssets = data.nodes.filter(n => n.role === 'catalog_downstream');
+
+      // Count only actual database objects (tables/views), not the query transformation node
+      const totalDbObjects = sources.length + targets.length + biAssets.length;
+      const countLabel = totalDbObjects === 1 ? '1 table/view' : totalDbObjects + ' tables/views';
+      document.getElementById('nodeCountBadge').innerText = countLabel;
 
       // Sources
       const sourcesGrid = document.getElementById('sourcesGrid');
