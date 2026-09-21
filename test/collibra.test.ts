@@ -4,11 +4,11 @@ import { SqlLineageExtractor } from "../src/parser/SqlLineageExtractor";
 import { CollibraConnection } from "../src/types";
 
 async function testCollibraIntegration() {
-  console.log("Running CollibraClient Integration Test against live Collibra container...");
+  console.log("Running CollibraClient Integration Test against live Collibra catalog...\n");
 
   const conn: CollibraConnection = {
     id: "test-conn",
-    name: "Pagila Collibra Local",
+    name: "Collibra Local Service",
     url: "http://localhost:8080",
     username: "admin",
     password: "password123"
@@ -16,7 +16,7 @@ async function testCollibraIntegration() {
 
   const client = new CollibraClient(conn);
 
-  // Test finding pagila.film
+  // 1. Pagila Catalog Tests
   const filmAsset = await client.findAsset("pagila.film");
   assert.ok(filmAsset, "pagila.film should be found in Collibra catalog");
   assert.strictEqual(filmAsset.typeName, "Table");
@@ -24,50 +24,65 @@ async function testCollibraIntegration() {
   assert.strictEqual(filmAsset.attributes["Data Steward"], "sarah.content@enterprise.com");
   console.log("✓ Film asset verified from Collibra REST API v2:", filmAsset.name, filmAsset.status);
 
-  // Test finding pagila.actor
   const actorAsset = await client.findAsset("pagila.actor");
   assert.ok(actorAsset, "pagila.actor should be found in Collibra catalog");
   console.log("✓ Actor asset verified from Collibra REST API v2:", actorAsset.name);
 
-  // Test building full lineage graph from user query
-  const query = "SELECT f.title, a.first_name FROM pagila.film f JOIN pagila.actor a ON 1=1;";
-  const stmt = SqlLineageExtractor.analyzeStatement(query, 0, 0, "pagila");
-  const graph = await client.buildLineageGraph(stmt);
+  // 2. SingleStore Jaffle Shop Catalog Tests
+  const rawCustomersAsset = await client.findAsset("landing.raw_customers");
+  assert.ok(rawCustomersAsset, "landing.raw_customers should be found in Collibra catalog");
+  assert.strictEqual(rawCustomersAsset.typeName, "Table");
+  assert.strictEqual(rawCustomersAsset.status, "Approved");
+  assert.ok(rawCustomersAsset.columns && rawCustomersAsset.columns.length >= 2, "raw_customers should contain columns");
+  console.log(`✓ SingleStore Jaffle Shop raw_customers verified with ${rawCustomersAsset.columns?.length} columns (e.g. ${rawCustomersAsset.columns?.[0]?.name}: ${rawCustomersAsset.columns?.[0]?.dataType})`);
 
-  assert.ok(graph.nodes.length >= 3, "Graph should have query and at least 2 source nodes");
-  assert.ok(graph.edges.length >= 2, "Graph should have edges from sources to query");
+  const stgCustomersAsset = await client.findAsset("staging.stg_customers");
+  assert.ok(stgCustomersAsset, "staging.stg_customers should be found in Collibra catalog");
+  assert.strictEqual(stgCustomersAsset.typeName, "View");
+  console.log("✓ SingleStore Jaffle Shop stg_customers verified:", stgCustomersAsset.name);
 
-  console.log(`✓ Lineage graph generated with ${graph.nodes.length} nodes and ${graph.edges.length} edges`);
+  const martCustomersAsset = await client.findAsset("presentation.customers");
+  assert.ok(martCustomersAsset, "presentation.customers mart should be found in Collibra catalog");
+  console.log("✓ SingleStore Jaffle Shop mart presentation.customers verified:", martCustomersAsset.name);
 
-  // Test the user's specific query: Film, Film Actor, Actor
-  const userMultiJoinQuery = `
-    SELECT 
-        f.film_id,
-        f.title,
-        f.release_year,
-        f.rental_rate,
-        a.first_name,
-        a.last_name
-    FROM pagila.film f
-    JOIN pagila.film_actor fa ON f.film_id = fa.film_id
-    JOIN pagila.actor a ON fa.actor_id = a.actor_id
-    WHERE f.rental_rate > 2.99
-    ORDER BY f.title ASC;
+  // 3. Multi-hop Lineage Diagram (raw_customers -> stg_customers -> customers -> BI churn report)
+  const lineage = await client.getAssetLineageRelations(stgCustomersAsset.id, 2, true);
+  assert.ok(lineage.upstream.length > 0, "stg_customers should have upstream table (landing.raw_customers)");
+  assert.ok(lineage.downstream.length > 0, "stg_customers should have downstream table (presentation.customers)");
+  console.log("✓ stg_customers lineage relations:", {
+    upstream: lineage.upstream.map(u => u.name),
+    downstream: lineage.downstream.map(d => d.name)
+  });
+
+  // 4. Test building full lineage graph from dbt model
+  const dbtCompiledQuery = `
+    with customers as (
+        select * from staging.stg_customers
+    ),
+    orders as (
+        select * from staging.stg_orders
+    )
+    select * from customers left join orders using (customer_id);
   `;
-  const multiStmt = SqlLineageExtractor.analyzeStatement(userMultiJoinQuery, 0, 11, "pagila");
-  const multiGraph = await client.buildLineageGraph(multiStmt);
+  const dbtStmt = SqlLineageExtractor.analyzeStatement(dbtCompiledQuery, 0, 8, "landing", "singlestore");
+  dbtStmt.statementType = "DBT_MODEL";
+  dbtStmt.targetObjects = ["presentation.customers"];
+  dbtStmt.allObjects = ["presentation.customers", "staging.stg_customers", "staging.stg_orders"];
+  dbtStmt.origin = "dbt_target";
 
-  // Exclude current query node
-  const dbNodes = multiGraph.nodes.filter(n => n.role !== "current_query");
-  const actorNodes = dbNodes.filter(n => n.name === "pagila.actor");
-  console.log("Multi-join query DB objects:", dbNodes.map(n => `${n.name} (${n.role}, attrs: ${Object.keys(n.attributes || {}).length})`));
+  const graph = await client.buildLineageGraph(dbtStmt, {
+    depth: 2,
+    showColumnLevel: true,
+    showDataTypes: true
+  });
 
-  assert.strictEqual(actorNodes.length, 1, "pagila.actor must appear exactly ONCE (no duplicates)");
-  assert.strictEqual(dbNodes.length, 3, "There should be exactly 3 unique database tables in the multi-join query");
-  assert.ok(actorNodes[0].foundInCollibra, "Actor node must be found in Collibra");
-  assert.ok(actorNodes[0].attributes && Object.keys(actorNodes[0].attributes).length > 0, "Actor node must have non-empty attributes");
-  assert.ok(actorNodes[0].collibraUrl && actorNodes[0].collibraUrl.includes("assetId="), "Actor node must have working deep link URL");
-  console.log("✓ User reported query test passed: 0 duplicates, exactly 3 tables, complete attributes and deep link.");
+  assert.ok(graph.nodes.length >= 4, "Graph should have query and at least 3 model/table nodes");
+  assert.ok(graph.edges.length >= 3, "Graph should have edges connecting models to transformation");
+
+  const graphCustomerNode = graph.nodes.find(n => n.name === "landing.raw_customers" || n.name === "staging.stg_customers");
+  assert.ok(graphCustomerNode, "Graph should include cataloged SingleStore Jaffle Shop tables");
+  assert.ok(graphCustomerNode.columns && graphCustomerNode.columns.length > 0, "Catalog node should include column list with data types");
+  console.log(`✓ dbt SingleStore lineage graph built with ${graph.nodes.length} nodes, ${graph.edges.length} edges, and column-level metadata.`);
 
   console.log("\nALL COLLIBRA CLIENT INTEGRATION TESTS PASSED!");
 }

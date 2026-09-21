@@ -2,8 +2,8 @@
   "name": "collibra-lineage",
   "displayName": "Collibra SQL Lineage",
   "description": "Interactive SQL query lineage and Collibra Data Governance catalog integration at your cursor",
-  "version": "0.1.0",
-  "publisher": "collibra-dataops",
+  "version": "0.2.0",
+  "publisher": "jimvekemans",
   "repository": {
     "type": "git",
     "url": "https://github.com/collibra-dataops/collibra-lineage"
@@ -136,14 +136,36 @@
           "items": {
             "type": "object",
             "properties": {
-              "id": { "type": "string", "description": "Unique identifier for the connection" },
-              "name": { "type": "string", "description": "Human-readable connection name" },
-              "url": { "type": "string", "description": "Collibra REST API v2 base URL" },
-              "username": { "type": "string", "description": "Username / service account" },
-              "password": { "type": "string", "description": "Password or API token" },
-              "isDefault": { "type": "boolean", "description": "Whether this is the default connection" }
+              "id": {
+                "type": "string",
+                "description": "Unique identifier for the connection"
+              },
+              "name": {
+                "type": "string",
+                "description": "Human-readable connection name"
+              },
+              "url": {
+                "type": "string",
+                "description": "Collibra REST API v2 base URL"
+              },
+              "username": {
+                "type": "string",
+                "description": "Username / service account"
+              },
+              "password": {
+                "type": "string",
+                "description": "Password or API token"
+              },
+              "isDefault": {
+                "type": "boolean",
+                "description": "Whether this is the default connection"
+              }
             },
-            "required": ["id", "name", "url"]
+            "required": [
+              "id",
+              "name",
+              "url"
+            ]
           }
         },
         "collibra.activeConnectionId": {
@@ -155,6 +177,38 @@
           "type": "string",
           "default": "",
           "description": "Direct URL of Collibra instance (convenience setting)."
+        },
+        "collibra.projectType": {
+          "type": "string",
+          "enum": ["auto", "dbt", "pure sql"],
+          "default": "auto",
+          "description": "Type of project: 'pure sql' reads active file directly, 'dbt' reads compiled file from target directory, 'auto' detects dbt_project.yml."
+        },
+        "collibra.dwhBackend": {
+          "type": "string",
+          "enum": ["singlestore", "postgres", "mysql"],
+          "default": "singlestore",
+          "description": "Target DWH backend determining SQL dialect, quotes, and schemas."
+        },
+        "collibra.lineage.depth": {
+          "type": "number",
+          "default": 2,
+          "description": "Lineage traversal depth for upstream and downstream catalog objects."
+        },
+        "collibra.lineage.showColumnLevel": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to display column-level assets and relations in lineage diagrams."
+        },
+        "collibra.lineage.showDataTypes": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to display SQL column data types."
+        },
+        "collibra.dbtTargetPath": {
+          "type": "string",
+          "default": "target/compiled",
+          "description": "Relative path where compiled dbt models are located."
         }
       }
     }

@@ -1,0 +1,13 @@
+{
+    "collibra.connections": [
+        {
+            "id": "conn-pagila-local",
+            "name": "Pagila Collibra Service (Local)",
+            "url": "http://collibra-service:8080",
+            "username": "admin",
+            "password": "password123",
+            "isDefault": true
+        }
+    ],
+    "collibra.activeConnectionId": "conn-pagila-local"
+}

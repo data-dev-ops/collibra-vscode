@@ -1,4 +1,5 @@
 import * as assert from "assert";
+import * as path from "path";
 import { SqlLineageExtractor } from "../src/parser/SqlLineageExtractor";
 
 function testSqlLineageExtractor() {
@@ -88,6 +89,68 @@ function testSqlLineageExtractor() {
   assert.ok(res7.sourceObjects.includes("pagila.film"));
   assert.ok(res7.sourceObjects.includes("pagila.actor"));
   console.log("✓ Test 7 Passed: Unqualified tables default to configured schema");
+
+  // 8. SingleStore Dialect (Backticks & Columnstore/Rowstore DDL)
+  const singleStoreQuery = "SELECT * FROM `landing`.`raw_orders` o JOIN `landing`.`raw_customers` c ON o.customer = c.id;";
+  const res8 = SqlLineageExtractor.analyzeStatement(singleStoreQuery, 0, 0, "landing", "singlestore");
+  assert.ok(res8.sourceObjects.includes("landing.raw_orders"), "Should extract landing.raw_orders without backticks");
+  assert.ok(res8.sourceObjects.includes("landing.raw_customers"), "Should extract landing.raw_customers without backticks");
+
+  const singleStoreDdl = `
+    CREATE COLUMNSTORE TABLE landing.orders_summary (
+      order_id VARCHAR(36),
+      order_total NUMERIC(12,4),
+      SHARD KEY (order_id)
+    );
+  `;
+  const resDdl = SqlLineageExtractor.analyzeStatement(singleStoreDdl, 0, 5, "landing", "singlestore");
+  assert.strictEqual(resDdl.statementType, "CREATE_TABLE_AS");
+  assert.ok(resDdl.targetObjects.includes("landing.orders_summary"));
+  console.log("✓ Test 8 Passed: SingleStore dialect handles backticks and COLUMNSTORE DDL");
+
+  // 9. dbt Manifest-First Lineage Extraction (from dbt-academy/target/manifest.json)
+  const dbtProjectRoot = path.resolve(__dirname, "../../../dbt-academy");
+  const mockStgDoc: any = {
+    fileName: path.join(dbtProjectRoot, "models/staging/stg_customers.sql"),
+    getText: () => "select id as customer_id, name as customer_name from {{ source('landing', 'raw_customers') }}",
+    lineCount: 1
+  };
+  const resManifestStg = SqlLineageExtractor.extractFromDbtManifest(mockStgDoc, dbtProjectRoot, "singlestore", "landing");
+  assert.strictEqual(resManifestStg.statementType, "DBT_MODEL");
+  assert.strictEqual(resManifestStg.origin, "dbt_manifest");
+  assert.strictEqual(resManifestStg.manifestMissing, false);
+  assert.ok(resManifestStg.targetObjects.includes("staging.stg_customers"), "Target must be staging.stg_customers from manifest");
+  assert.ok(resManifestStg.sourceObjects.includes("landing.raw_customers"), "Source must be landing.raw_customers from manifest");
+  assert.strictEqual(resManifestStg.manifestDetails?.schema, "staging");
+  assert.strictEqual(resManifestStg.manifestDetails?.alias, "stg_customers");
+  assert.ok(resManifestStg.columnMetadataMap?.["staging.stg_customers"], "Must include column metadata for target");
+  assert.ok(resManifestStg.columnMetadataMap?.["landing.raw_customers"], "Must include column metadata for upstream source");
+  console.log("✓ Test 9 Passed: dbt manifest extraction resolves exact staging model and source with columns");
+
+  // 10. dbt Mart Multi-Dependency Lineage Extraction
+  const mockMartDoc: any = {
+    fileName: path.join(dbtProjectRoot, "models/marts/customers.sql"),
+    getText: () => "select * from {{ ref('stg_customers') }} join {{ ref('stg_orders') }} using (customer_id)",
+    lineCount: 1
+  };
+  const resManifestMart = SqlLineageExtractor.extractFromDbtManifest(mockMartDoc, dbtProjectRoot, "singlestore", "landing");
+  assert.ok(resManifestMart.targetObjects.includes("presentation.customers"));
+  assert.ok(resManifestMart.sourceObjects.includes("staging.stg_customers"));
+  assert.ok(resManifestMart.sourceObjects.includes("staging.stg_orders"));
+  assert.strictEqual(resManifestMart.manifestDetails?.schema, "presentation");
+  console.log("✓ Test 10 Passed: dbt manifest extraction resolves mart with multi-model dependencies");
+
+  // 11. Missing Target / Manifest handling
+  const mockMissingDoc: any = {
+    fileName: "/tmp/nonexistent_dbt_project/models/foo.sql",
+    getText: () => "select 1",
+    lineCount: 1
+  };
+  const resMissing = SqlLineageExtractor.extractFromDbtManifest(mockMissingDoc, "/tmp/nonexistent_dbt_project", "singlestore", "landing");
+  assert.strictEqual(resMissing.manifestMissing, true, "Must flag manifestMissing as true");
+  assert.strictEqual(resMissing.targetObjects.length, 0, "Must not fabricate target objects when manifest is missing");
+  assert.strictEqual(resMissing.sourceObjects.length, 0, "Must not fabricate source objects when manifest is missing");
+  console.log("✓ Test 11 Passed: Missing target/manifest.json is cleanly flagged without guessing");
 
   console.log("\nALL PARSER TESTS PASSED!");
 }

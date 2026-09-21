@@ -88,12 +88,13 @@ export async function activate(context: vscode.ExtensionContext) {
   // 7. Listen for Cursor Movements in SQL Editors
   context.subscriptions.push(
     vscode.window.onDidChangeTextEditorSelection(event => {
-      if (event.textEditor.document.languageId === "sql" || event.textEditor.document.fileName.endsWith(".sql")) {
+      const doc = event.textEditor.document;
+      if (doc.languageId === "sql" || doc.languageId === "jinja-sql" || doc.fileName.endsWith(".sql")) {
         lineageProvider.triggerCursorUpdate(event.textEditor);
       }
     }),
     vscode.window.onDidChangeActiveTextEditor(editor => {
-      if (editor && (editor.document.languageId === "sql" || editor.document.fileName.endsWith(".sql"))) {
+      if (editor && (editor.document.languageId === "sql" || editor.document.languageId === "jinja-sql" || editor.document.fileName.endsWith(".sql"))) {
         lineageProvider.updateForEditor(editor);
       }
     })

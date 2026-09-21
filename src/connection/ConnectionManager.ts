@@ -46,18 +46,26 @@ export class ConnectionManager {
   private async ensureDefaultConnection(): Promise<void> {
     const connections = await this.getConnections();
     if (connections.length === 0) {
-      // Determine default host: inside devcontainer collibra-service is reachable
       const defaultUrl = process.env.COLLIBRA_URL || "http://collibra-service:8080";
-      const defaultConn: CollibraConnection = {
-        id: "conn-pagila-local",
-        name: "Pagila Collibra Service (Local)",
+      const singleStoreConn: CollibraConnection = {
+        id: "conn-singlestore-local",
+        name: "SingleStore Jaffle Shop (Local)",
         url: defaultUrl,
         username: "admin",
         password: "password123",
         isDefault: true
       };
-      await this.saveConnection(defaultConn);
-      await this.setActiveConnection(defaultConn.id);
+      const pagilaConn: CollibraConnection = {
+        id: "conn-pagila-local",
+        name: "Pagila PostgreSQL (Local)",
+        url: defaultUrl,
+        username: "admin",
+        password: "password123",
+        isDefault: false
+      };
+      await this.saveConnection(singleStoreConn);
+      await this.saveConnection(pagilaConn);
+      await this.setActiveConnection(singleStoreConn.id);
     }
   }
 
@@ -183,18 +191,22 @@ export class ConnectionManager {
 
   public getCandidateUrls(inputUrl: string): string[] {
     const raw = (inputUrl || "http://localhost:8080").trim().replace(/\/+$/, "");
-    const candidates: string[] = [raw];
+    const candidates: string[] = [];
 
-    // If url contains localhost or 127.0.0.1, inside container collibra-service is the Docker network host
-    if (/localhost|127\.0\.0\.1/.test(raw)) {
-      candidates.push(raw.replace(/localhost|127\.0\.0\.1/, "collibra-service"));
-      if (process.env.COLLIBRA_URL) {
-        candidates.push(process.env.COLLIBRA_URL.trim().replace(/\/+$/, ""));
-      }
-      candidates.push(raw.replace(/localhost|127\.0\.0\.1/, "host.docker.internal"));
-    } else if (/collibra-service/.test(raw)) {
+    if (/collibra-service/.test(raw)) {
       candidates.push(raw.replace("collibra-service", "localhost"));
       candidates.push(raw.replace("collibra-service", "127.0.0.1"));
+      candidates.push(raw);
+    } else if (/localhost|127\.0\.0\.1/.test(raw)) {
+      candidates.push(raw);
+      candidates.push(raw.replace(/localhost|127\.0\.0\.1/, "127.0.0.1"));
+      candidates.push(raw.replace(/localhost|127\.0\.0\.1/, "collibra-service"));
+    } else {
+      candidates.push(raw);
+    }
+
+    if (process.env.COLLIBRA_URL) {
+      candidates.push(process.env.COLLIBRA_URL.trim().replace(/\/+$/, ""));
     }
 
     return Array.from(new Set(candidates));
